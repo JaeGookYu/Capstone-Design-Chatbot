@@ -1,45 +1,68 @@
-import torch
 import pandas as pd
-from torch.utils.data import Dataset, DataLoader
-from transformers import BertTokenizer, BertForSequenceClassification, AdamW, get_linear_schedule_with_warmup
-from dataset import KoBERTDataset
+import torch
+import torch.nn as nn
+from sklearn.model_selection import train_test_split
+from torch.utils.data import DataLoader
+from transformers import ElectraForSequenceClassification, ElectraTokenizer, AdamW, get_cosine_schedule_with_warmup
+from dataset import TextDataset
 
-# 하이퍼파라미터 설정
-batch_size = 32
-max_length = 128
-learning_rate = 5e-5
-epochs = 4
+# 데이터 읽기
+data = pd.read_csv("your_data.csv")
+train_data, val_data = train_test_split(data, test_size=0.1)
 
-# 토크나이저 및 모델 초기화
-tokenizer = BertTokenizer.from_pretrained('monologg/kobert')
-model = BertForSequenceClassification.from_pretrained('monologg/kobert', num_labels = 2)  # num_labels에 라벨 수 입력
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model.to(device)
+# 손실 함수
+def model_loss(model, inputs, return_outputs=False):
+    labels = inputs.pop('label')
+    outputs = model(**inputs)
+    logits = outputs.logits
+    loss_fct = nn.CrossEntropyLoss()
+    loss = loss_fct(logits, labels)
+    return (loss, outputs) if return_outputs else loss
 
-# 데이터 로드
-train_dataset = KoBERTDataset('train.csv', tokenizer, max_length)
-train_loader = DataLoader(train_dataset, batch_size = batch_size, shuffle = True)
+# 모델과 토크나이저 생성
+tokenizer = ElectraTokenizer.from_pretrained("monologg/koelectra-base-v3-discriminator")
 
-# 옵티마이저 및 스케줄러 설정
-optimizer = AdamW(model.parameters(), lr = learning_rate)
-total_steps = len(train_loader) * epochs
-scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps = 0, num_training_steps = total_steps)
+model_sbj = ElectraForSequenceClassification.from_pretrained("monologg/koelectra-base-v3-discriminator", num_labels = 3)
 
-# 모델 학습
-model.train()
-for epoch in range(epochs):
-    for batch in train_loader:
-        input_ids = batch['input_ids'].to(device)
-        attention_mask = batch['attention_mask'].to(device)
-        labels = batch['labels'].to(device)
+train_dataset_sbj = TextDataset(train_data, tokenizer, label_idx=1)
+val_dataset_sbj = TextDataset(val_data, tokenizer, label_idx=1)
 
-        outputs = model(input_ids, attention_mask=attention_mask, labels=labels)
-        loss = outputs.loss
+train_loader_sbj = DataLoader(train_dataset_sbj, batch_size=16, shuffle=True)
+val_loader_sbj = DataLoader(val_dataset_sbj, batch_size=16, shuffle=False)
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model_sbj = model_sbj.to(device)
+
+optimizer_sbj = AdamW(model_sbj.parameters(), lr = 5e-5)
+
+NUM_EPOCHS = 5
+total_steps = len(train_loader_sbj) * NUM_EPOCHS
+scheduler_sbj = get_cosine_schedule_with_warmup(optimizer_sbj, num_warmup_steps = int(total_steps * 0.1), num_training_steps = total_steps)
+
+# Training and Evaluation
+for epoch in range(NUM_EPOCHS):
+    # Model 1 Training
+    model_sbj.train()
+    for batch in train_loader_sbj:
+        optimizer_sbj.zero_grad()
+        inputs = {key: val.to(device) for key, val in batch.items()}
+        loss = model_loss(model_sbj, inputs)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
-        scheduler.step()
-        optimizer.zero_grad()
+        optimizer_sbj.step()
+        scheduler_sbj.step()
+    print(f"Epoch {epoch + 1}/{NUM_EPOCHS}")
 
-    print(f"Epoch {epoch + 1}/{epochs}, Loss: {loss.item()}")
+    # Model 1 Evaluation
+    model_sbj.eval()
+    total_eval_accuracy_sbj = 0
+    for batch in val_loader_sbj:
+        inputs = {key: val.to(device) for key, val in batch.items()}
+        with torch.no_grad():
+            outputs = model_sbj(**inputs)
+            logits = outputs.logits
+            preds = torch.argmax(logits, dim=-1)
+            label_ids = inputs['label']
+            total_eval_accuracy_sbj += (preds == label_ids).sum().item()
+    print(f"Model_sbj Epoch {epoch}: Validation Accuracy: {total_eval_accuracy_sbj / len(val_dataset_sbj)}")
+    
+model_sbj.save_pretrained("saved_models/model_sbj")

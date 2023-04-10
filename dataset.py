@@ -1,33 +1,33 @@
 import torch
-import pandas as pd
-from torch.utils.data import Dataset, DataLoader
-from transformers import BertTokenizer, BertForSequenceClassification, AdamW
+from torch.utils.data import Dataset
 
-# 데이터셋 클래스 정의
-class KoBERTDataset(Dataset):
-    def __init__(self, file, tokenizer, max_length):
-        self.data = pd.read_csv(file, header=None)
+# Dataset 클래스
+class TextDataset(Dataset):
+    def __init__(self, data, tokenizer, label_idx):
+        self.data = data
         self.tokenizer = tokenizer
-        self.max_length = max_length
+        self.label_idx = label_idx
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
-        sentence = self.data.iloc[idx, 0]
-        label = self.data.iloc[idx, 1]
-        encoding = self.tokenizer.encode_plus(
-            sentence,
-            add_special_tokens=True,
-            max_length=self.max_length,
-            return_token_type_ids=False,
+        text = self.data.iloc[idx]['question']
+        inputs = self.tokenizer.encode_plus(
+            text,
             padding='max_length',
             truncation=True,
-            return_attention_mask=True,
-            return_tensors='pt',
+            max_length=256,
+            return_tensors='pt'
         )
+
+        input_ids = inputs['input_ids'][0]
+        attention_mask = inputs['attention_mask'][0]
+
+        label = torch.tensor(self.data.iloc[idx][f'label{self.label_idx}'], dtype=torch.long)
+
         return {
-            'input_ids': encoding['input_ids'].flatten(),
-            'attention_mask': encoding['attention_mask'].flatten(),
-            'labels': torch.tensor(label, dtype=torch.long),
+            'input_ids': input_ids,
+            'attention_mask': attention_mask,
+            'label': label
         }
