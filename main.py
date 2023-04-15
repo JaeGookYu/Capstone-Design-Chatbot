@@ -1,68 +1,72 @@
 import pandas as pd
 import torch
 import torch.nn as nn
-from sklearn.model_selection import train_test_split
-from torch.utils.data import DataLoader
-from transformers import ElectraForSequenceClassification, ElectraTokenizer, AdamW, get_cosine_schedule_with_warmup
 from dataset import TextDataset
+from torch.utils.data import DataLoader
+from transformers import ElectraForSequenceClassification, ElectraTokenizer,BertForSequenceClassification,BertTokenizer, AdamW, get_cosine_schedule_with_warmup
 
 # 데이터 읽기
-data = pd.read_csv("your_data.csv")
-train_data, val_data = train_test_split(data, test_size=0.1)
+data = pd.read_csv("data/data.csv",encoding='cp949')
 
-# 손실 함수
-def model_loss(model, inputs, return_outputs=False):
-    labels = inputs.pop('label')
-    outputs = model(**inputs)
-    logits = outputs.logits
-    loss_fct = nn.CrossEntropyLoss()
-    loss = loss_fct(logits, labels)
-    return (loss, outputs) if return_outputs else loss
+# 데이터 분할 비율 설정 (예: 70% train, 30% test)
+train_ratio = 0.7
+test_ratio = 0.3
+train_data = data.sample(frac=train_ratio)
+val_data = data.drop(train_data.index)
 
 # 모델과 토크나이저 생성
 tokenizer = ElectraTokenizer.from_pretrained("monologg/koelectra-base-v3-discriminator")
+model = ElectraForSequenceClassification.from_pretrained("monologg/koelectra-base-v3-discriminator", num_labels=3)
 
-model_sbj = ElectraForSequenceClassification.from_pretrained("monologg/koelectra-base-v3-discriminator", num_labels = 3)
+# tokenizer = BertTokenizer.from_pretrained("monologg/kobert")
+# model = BertForSequenceClassification.from_pretrained("monologg/kobert", num_labels=3)
 
-train_dataset_sbj = TextDataset(train_data, tokenizer, label_idx=1)
-val_dataset_sbj = TextDataset(val_data, tokenizer, label_idx=1)
+# 데이터셋과 데이터 로더 생성
+train_dataset = TextDataset(train_data, tokenizer)
+val_dataset = TextDataset(val_data, tokenizer)
 
-train_loader_sbj = DataLoader(train_dataset_sbj, batch_size=16, shuffle=True)
-val_loader_sbj = DataLoader(val_dataset_sbj, batch_size=16, shuffle=False)
+train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
 
+# 디바이스 설정
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model_sbj = model_sbj.to(device)
+model = model.to(device)
 
-optimizer_sbj = AdamW(model_sbj.parameters(), lr = 5e-5)
+# 옵티마이저와 스케줄러 설정
+optimizer = AdamW(model.parameters(), lr=5e-5)
+num_epochs = 5
+total_steps = len(train_loader) * num_epochs
+scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=int(total_steps * 0.1), num_training_steps=total_steps)
+loss_fct = nn.CrossEntropyLoss()
 
-NUM_EPOCHS = 5
-total_steps = len(train_loader_sbj) * NUM_EPOCHS
-scheduler_sbj = get_cosine_schedule_with_warmup(optimizer_sbj, num_warmup_steps = int(total_steps * 0.1), num_training_steps = total_steps)
-
-# Training and Evaluation
-for epoch in range(NUM_EPOCHS):
-    # Model 1 Training
-    model_sbj.train()
-    for batch in train_loader_sbj:
-        optimizer_sbj.zero_grad()
+# 학습 및 평가
+for epoch in range(num_epochs):
+    # 학습
+    model.train()
+    for batch in train_loader:
+        optimizer.zero_grad()
         inputs = {key: val.to(device) for key, val in batch.items()}
-        loss = model_loss(model_sbj, inputs)
+        labels = inputs.pop('label')
+        outputs = model(**inputs)
+        logits = outputs.logits
+        loss = loss_fct(logits, labels)
         loss.backward()
-        optimizer_sbj.step()
-        scheduler_sbj.step()
-    print(f"Epoch {epoch + 1}/{NUM_EPOCHS}")
+        optimizer.step()
+        scheduler.step()
 
-    # Model 1 Evaluation
-    model_sbj.eval()
-    total_eval_accuracy_sbj = 0
-    for batch in val_loader_sbj:
+    # 평가
+    model.eval()
+    total_eval_accuracy = 0
+    for batch in val_loader:
         inputs = {key: val.to(device) for key, val in batch.items()}
+        labels = inputs.pop('label')
         with torch.no_grad():
-            outputs = model_sbj(**inputs)
+            outputs = model(**inputs)
             logits = outputs.logits
             preds = torch.argmax(logits, dim=-1)
-            label_ids = inputs['label']
-            total_eval_accuracy_sbj += (preds == label_ids).sum().item()
-    print(f"Model_sbj Epoch {epoch}: Validation Accuracy: {total_eval_accuracy_sbj / len(val_dataset_sbj)}")
-    
-model_sbj.save_pretrained("saved_models/model_sbj")
+            total_eval_accuracy += (preds == labels).sum().item()
+
+    # 정확도 출력
+    print(f"Epoch {epoch + 1}/{num_epochs}: Validation Accuracy: {total_eval_accuracy / len(val_dataset)}")
+model.save_pretrained("saved_models/koelectra_model")
+# model.save_pretrained("saved_models/kobert_model")
